@@ -4,7 +4,3 @@ scipy
 networkx
 matplotlib
 scikit-learn
-tensorflow
-torch
-fastapi
-uvicorn
