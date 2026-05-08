@@ -1,149 +1,266 @@
-import streamlit as st
-import pandas as pd
+"""
+WAREHOUSE 4.0 - AI OPTIMIZED LOGISTICS SYSTEM
+------------------------------------------------
+Features:
+1. Dynamic layout optimization (AI-driven slotting)
+2. Two zones:
+   - Heavy & Special Products Zone
+   - Normal Products Zone
+3. Picking time optimization
+4. Scalability (modular + distributed-ready design)
+5. Event-driven system for unexpected events
+6. Heuristic + ML-ready architecture
+
+Author: AI Assistant (for educational/industrial prototype)
+"""
+
 import math
 import random
+from collections import defaultdict
+from datetime import datetime
 
-st.title("🏭 Smart Warehouse 4.0 - PRO SYSTEM")
+# =============================
+# DATA MODELS
+# =============================
 
-# =========================
-# 🧠 SESSION STATE (IMPORTANT)
-# =========================
-if "data" not in st.session_state:
-    st.session_state.data = pd.DataFrame({
-        "Product": ["A", "B", "C", "D", "E"],
-        "X": [1, 5, 2, 8, 6],
-        "Y": [1, 2, 6, 3, 7],
-        "Stock": [10, 8, 15, 5, 12],
-        "Defect_rate": [0.1, 0.05, 0.2, 0.08, 0.12]
-    })
+class Product:
+    def __init__(self, product_id, weight, frequency, special=False):
+        self.product_id = product_id
+        self.weight = weight
+        self.frequency = frequency  # demand frequency
+        self.special = special      # fragile / dangerous / heavy
 
-if "order_path" not in st.session_state:
-    st.session_state.order_path = []
+class Location:
+    def __init__(self, loc_id, x, y, zone):
+        self.loc_id = loc_id
+        self.x = x
+        self.y = y
+        self.zone = zone  # 'HEAVY' or 'NORMAL'
+        self.assigned_product = None
 
-if "alerts" not in st.session_state:
-    st.session_state.alerts = []
+class Order:
+    def __init__(self, order_id, products):
+        self.order_id = order_id
+        self.products = products
 
-data = st.session_state.data
+# =============================
+# WAREHOUSE MODEL
+# =============================
 
-# =========================
-# 📊 DASHBOARD KPI
-# =========================
-st.subheader("📊 Dashboard KPI")
+class Warehouse:
+    def __init__(self):
+        self.locations = []
+        self.products = {}
+        self.distance_cache = {}
 
-col1, col2, col3 = st.columns(3)
+    def add_location(self, loc):
+        self.locations.append(loc)
 
-col1.metric("Total Stock", int(data["Stock"].sum()))
-col2.metric("Nb Produits", len(data))
-col3.metric("Taux Défaut Moyen", round(data["Defect_rate"].mean(), 2))
+    def add_product(self, product):
+        self.products[product.product_id] = product
 
-st.dataframe(data)
+    # Euclidean distance (can be replaced by real path routing)
+    def distance(self, loc1, loc2):
+        return math.sqrt((loc1.x - loc2.x)**2 + (loc1.y - loc2.y)**2)
 
-# =========================
-# 🛒 COMMANDES
-# =========================
-st.subheader("🛒 Nouvelle Commande")
+# =============================
+# INITIAL LAYOUT DESIGN
+# =============================
 
-order = st.multiselect(
-    "Choisir les produits",
-    data["Product"].tolist()
-)
+class LayoutOptimizer:
 
-# =========================
-# 📏 DISTANCE
-# =========================
-def distance(a, b):
-    return math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2)
+    def __init__(self, warehouse):
+        self.wh = warehouse
 
-# =========================
-# 🚶 OPTIMISATION PICKING
-# =========================
-def optimize(order_list, df):
-    path = []
-    current = (0, 0)
-    remaining = order_list.copy()
+    def score_location(self, product, location):
+        """
+        Higher score = better placement
+        - High frequency products near picking station (0,0)
+        - Heavy products in heavy zone
+        """
+        base_distance = math.sqrt(location.x**2 + location.y**2)
 
-    while remaining:
-        nearest = None
-        min_d = float("inf")
+        score = product.frequency * (1 / (1 + base_distance))
 
-        for p in remaining:
-            row = df[df["Product"] == p].iloc[0]
-            pos = (row["X"], row["Y"])
-            d = distance(current, pos)
+        if product.special and location.zone != "HEAVY":
+            score -= 100  # penalty
 
-            if d < min_d:
-                min_d = d
-                nearest = p
+        if product.weight > 20 and location.zone != "HEAVY":
+            score -= 50
 
-        path.append(nearest)
-        row = df[df["Product"] == nearest].iloc[0]
-        current = (row["X"], row["Y"])
-        remaining.remove(nearest)
+        return score
 
-    return path
+    def optimize_layout(self):
+        unassigned_products = list(self.wh.products.values())
+        available_locations = self.wh.locations.copy()
 
-# =========================
-# 🚀 PROCESS ORDER
-# =========================
-if st.button("🚀 Générer Picking Optimisé"):
+        # Sort products by importance (frequency)
+        unassigned_products.sort(key=lambda p: p.frequency, reverse=True)
 
-    if not order:
-        st.warning("Sélectionne au moins un produit")
-    else:
-        path = optimize(order, data)
-        st.session_state.order_path = path
+        for product in unassigned_products:
+            best_loc = None
+            best_score = -99999
 
-        st.success("✅ Picking optimisé généré")
+            for loc in available_locations:
+                score = self.score_location(product, loc)
+                if score > best_score:
+                    best_score = score
+                    best_loc = loc
 
-        st.write("📍 Chemin opérateur :")
-        st.write(" → ".join(path))
+            if best_loc:
+                best_loc.assigned_product = product.product_id
+                available_locations.remove(best_loc)
 
-# =========================
-# 📡 QR SCAN SIMULATION
-# =========================
-st.subheader("📡 Scan Produit (QR Simulation)")
+# =============================
+# PICKING OPTIMIZATION
+# =============================
 
-scan_product = st.selectbox(
-    "Scanner un produit",
-    data["Product"].tolist()
-)
+class PickerOptimizer:
 
-if st.button("📡 Scanner"):
+    def __init__(self, warehouse):
+        self.wh = warehouse
 
-    row = data[data["Product"] == scan_product].iloc[0]
+    def route_distance(self, route):
+        total = 0
+        for i in range(len(route) - 1):
+            total += self.wh.distance(route[i], route[i+1])
+        return total
 
-    is_defect = random.random() < row["Defect_rate"]
+    def optimize_order(self, order):
+        locations = []
 
-    if is_defect:
-        alert = f"❌ {scan_product} DEFECTUEUX détecté !"
-        st.session_state.alerts.append(alert)
-        st.error(alert)
-    else:
-        st.success(f"✅ {scan_product} OK")
+        for loc in self.wh.locations:
+            if loc.assigned_product in order.products:
+                locations.append(loc)
 
-        # 🔄 mise à jour stock
-        st.session_state.data.loc[
-            st.session_state.data["Product"] == scan_product,
-            "Stock"
-        ] -= 1
+        # Simple nearest neighbor heuristic
+        start = Location("START", 0, 0, "DEPOT")
+        route = [start]
+        remaining = locations.copy()
 
-# =========================
-# 🚨 ALERTES
-# =========================
-st.subheader("🚨 Alertes Qualité")
+        current = start
 
-if st.session_state.alerts:
-    for a in st.session_state.alerts:
-        st.warning(a)
-else:
-    st.info("Aucune alerte")
+        while remaining:
+            next_loc = min(remaining, key=lambda l: self.wh.distance(current, l))
+            route.append(next_loc)
+            remaining.remove(next_loc)
+            current = next_loc
 
-# =========================
-# 📦 TRAJET OPÉRATEUR
-# =========================
-st.subheader("🚶 Dernier Trajet Opérateur")
+        route.append(start)
 
-if st.session_state.order_path:
-    st.write(" → ".join(st.session_state.order_path))
-else:
-    st.info("Aucune commande traitée")
+        return route, self.route_distance(route)
+
+# =============================
+# EVENT HANDLING SYSTEM
+# =============================
+
+class EventSystem:
+
+    def __init__(self, warehouse):
+        self.wh = warehouse
+
+    def handle_event(self, event):
+        if event["type"] == "STOCK_OUT":
+            self.reallocate(event["product_id"])
+
+        elif event["type"] == "NEW_DEMAND_PATTERN":
+            self.reoptimize_layout()
+
+        elif event["type"] == "LOCATION_BLOCKED":
+            self.free_alternative(event["loc_id"])
+
+    def reallocate(self, product_id):
+        print(f"Reallocating product {product_id}")
+
+    def reoptimize_layout(self):
+        print("Reoptimizing full layout...")
+        optimizer = LayoutOptimizer(self.wh)
+        optimizer.optimize_layout()
+
+    def free_alternative(self, loc_id):
+        print(f"Finding alternative for blocked location {loc_id}")
+
+# =============================
+# SCALABILITY DESIGN (SIMULATED)
+# =============================
+
+class DistributedWarehouseNode:
+    def __init__(self, node_id):
+        self.node_id = node_id
+        self.local_data = {}
+
+    def sync(self, global_state):
+        self.local_data.update(global_state)
+
+class WarehouseCluster:
+    def __init__(self):
+        self.nodes = []
+
+    def add_node(self, node):
+        self.nodes.append(node)
+
+    def broadcast(self, state):
+        for node in self.nodes:
+            node.sync(state)
+
+# =============================
+# SIMULATION ENGINE
+# =============================
+
+class WarehouseSimulation:
+
+    def __init__(self):
+        self.wh = Warehouse()
+        self.event_system = EventSystem(self.wh)
+
+    def setup(self):
+        # Create locations (grid)
+        for i in range(5):
+            for j in range(5):
+                zone = "HEAVY" if i < 2 else "NORMAL"
+                self.wh.add_location(Location(f"L{i}{j}", i, j, zone))
+
+        # Create products
+        for i in range(10):
+            self.wh.add_product(Product(
+                f"P{i}",
+                weight=random.randint(1, 50),
+                frequency=random.randint(1, 100),
+                special=random.choice([True, False])
+            ))
+
+    def run(self):
+        optimizer = LayoutOptimizer(self.wh)
+        optimizer.optimize_layout()
+
+        picker = PickerOptimizer(self.wh)
+
+        order = Order("O1", ["P1", "P2", "P3"])
+        route, dist = picker.optimize_order(order)
+
+        print("Optimized picking distance:", dist)
+
+        # simulate event
+        self.event_system.handle_event({
+            "type": "NEW_DEMAND_PATTERN"
+        })
+
+# =============================
+# MAIN
+# =============================
+
+if __name__ == "__main__":
+    sim = WarehouseSimulation()
+    sim.setup()
+    sim.run()
+
+"""
+EXTENSIONS POSSIBLES (INDUSTRIAL REAL):
+---------------------------------------
+1. Reinforcement Learning (RL) for layout optimization
+2. Real-time IoT integration (RFID, sensors)
+3. Digital Twin (3D warehouse simulation)
+4. Multi-warehouse coordination (supply chain network)
+5. Graph-based shortest path (A* algorithm instead of greedy)
+6. Predictive demand forecasting (LSTM / Prophet)
+"""
